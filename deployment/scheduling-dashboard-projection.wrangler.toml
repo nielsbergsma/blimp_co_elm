@@ -1,0 +1,15 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "scheduling-dashboard-projection"
+main = "dist/scheduling-dashboard-projection/worker.js"
+compatibility_date = "2024-09-25"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = false
+
+[[queues.consumers]]
+queue = "scheduling-queue"
+
+[[r2_buckets]]
+binding = "scheduling_bucket"
+bucket_name = "scheduling"

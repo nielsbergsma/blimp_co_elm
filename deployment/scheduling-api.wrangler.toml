@@ -1,0 +1,28 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "scheduling-api"
+main = "dist/scheduling-api/worker.js"
+compatibility_date = "2024-09-25"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = false
+
+[[durable_objects.bindings]]
+name = "airfields"
+class_name = "AirfieldRepository"
+
+[[durable_objects.bindings]]
+name = "airships"
+class_name = "AirshipRepository"
+
+[[durable_objects.bindings]]
+name = "flights"
+class_name = "FlightRepository"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["AirfieldRepository", "AirshipRepository", "FlightRepository"]
+
+[[queues.producers]]
+binding = "scheduling_queue"
+queue = "scheduling-queue"
