@@ -191,14 +191,14 @@ viewAirshipFilter : SchedulingData.Airship -> Bool -> Html Message
 viewAirshipFilter airship filtered = 
   if not filtered 
   then
-    button [ class "rounded-full mr-2 mb-2 w-36 py-1 px-4 bg-gray-100 hover:bg-gray-800 hover:text-white"
+    button [ class "rounded-full mr-2 mb-2 w-40 py-1 px-4 bg-gray-100 hover:bg-gray-800 hover:text-white"
            , onClick (AddAirshipFilter airship) 
            , title airship.name
            ]
     [ text airship.id
     ]
   else
-    button [ class "rounded-full mr-2  mb-2 w-36 py-1 px-4 bg-gray-800 text-white hover:bg-gray-600"
+    button [ class "rounded-full mr-2  mb-2 w-40 py-1 px-4 bg-gray-800 text-white hover:bg-gray-600"
            , onClick (RemoveAirshipFilter airship) 
            , title airship.name
            ]
@@ -220,14 +220,14 @@ viewRouteFilter : SchedulingData.FlightRoute -> Bool -> Html Message
 viewRouteFilter route filtered = 
   if not filtered 
   then
-    button [ class "rounded-full mr-2 mb-2 w-36 py-1 px-4 bg-gray-100 hover:bg-gray-800 hover:text-white"
+    button [ class "rounded-full mr-2 mb-2 w-40 py-1 px-4 bg-gray-100 hover:bg-gray-800 hover:text-white"
            , onClick (AddRouteFilter route) 
            , title (formatFlightRouteNames route)
            ]
     [ text (formatFlightRoute route)
     ]
   else
-     button [ class "rounded-full mr-2 mb-2 w-36 py-1 px-4 bg-gray-800 text-white hover:bg-gray-600"
+     button [ class "rounded-full mr-2 mb-2 w-40 py-1 px-4 bg-gray-800 text-white hover:bg-gray-600"
            , onClick (RemoveRouteFilter route)
            , title (formatFlightRouteNames route)
            ]
