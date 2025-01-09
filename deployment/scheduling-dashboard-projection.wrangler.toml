@@ -9,6 +9,8 @@ enabled = false
 
 [[queues.consumers]]
 queue = "scheduling-queue"
+max_concurrency=1 # single writer
+
 
 [[r2_buckets]]
 binding = "scheduling_bucket"
