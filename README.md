@@ -51,11 +51,7 @@ To compile and run the source code, ensure the following are installed:
 - Node.js (with npm)  
 - Make  
 
-Run the following command to install project dependencies:  
-
-```shell
-make install
-```  
+See the [Makefile](Makefile) exposes `build@scheduling-api`, `build@scheduling-dashboard-projection` and `build@backoffice` tasks to compile (transpile) the sources. 
 
 ## Run Locally  
 
