@@ -1,5 +1,5 @@
 module BoundedContext.Scheduling.Usecase.AddAirshipToFleet exposing 
-  ( Model(..)
+  ( Model
   , Error(..)
   , Message(..)
   , IO
@@ -25,12 +25,21 @@ import Cloudflare.Worker.Queue as Queue
 import Prelude.Transaction as Transaction
 
 
-type Model 
-  = Initialised IO Next Airship
-  | TransactionBegan IO Next Airship
-  | TransactionCommitted IO Next Airship
-  | Failed Error
-  | Completed 
+type alias Model =
+  { io : IO
+  , next : Next
+  , state : State
+  }
+
+
+type State
+  = BeginningTransaction Airship
+  | CommittingTransaction Airship
+  | PublishingEvent Airship
+
+type alias StateHandler = IO -> Message -> Transition
+
+type alias Transition = State -> (Result Error State, Cmd Message)
 
 
 type Error
@@ -70,85 +79,113 @@ type alias Next = CommandResult -> Cmd Message
 init : IO -> Next -> Command -> (Model, Cmd Message)
 init io next command =
   let 
-    airship = Airship.build command.id command.name command.model command.numberOfSeats
+    airship =
+      Airship.build command.id command.name command.model command.numberOfSeats
+
+    state =
+      BeginningTransaction airship
+
+    beginTransaction =
+      io.beginTransaction command.id |> Cmd.map BeginTransactionCompleted
   in
-    (Initialised io next airship, io.beginTransaction command.id |> Cmd.map BeginTransactionCompleted)
+    (Model io next state, beginTransaction)
 
 
 update : Message -> Model -> (Model, Cmd Message)
-update message model = 
-  case model of 
-    -- Initialized state
-    Initialised io next airship->
-      case message of
-        BeginTransactionCompleted (Err error) ->
-          fail next (InternalError (BeginTransaction.errorToString error))
+update message model =
+  handle message model <|
+    case model.state of
+      BeginningTransaction airship ->
+        beginningTransaction airship
 
-        BeginTransactionCompleted (Ok transaction) ->
-          case transaction of
-            Transaction.Existing _ _ _ -> 
-              fail next AlreadyExist
+      CommittingTransaction airship ->
+        committingTransaction airship
 
-            Transaction.Empty _ ->
-              let
-                transaction_ = Transaction.withValue airship transaction
-              in
-                (TransactionBegan io next airship, io.commitTransaction transaction_ |> Cmd.map CommitTransactionCompleted)
+      PublishingEvent _ ->
+        publishingEvent
 
-        CommitTransactionCompleted _ -> 
-          (model, Cmd.none)
 
-        EventPublishCompleted _ ->
-          (model, Cmd.none) 
+beginningTransaction : Airship -> StateHandler
+beginningTransaction airship io message =
+  case message of
+    BeginTransactionCompleted (Err error) ->
+      fail (InternalError (BeginTransaction.errorToString error))
 
-    -- Transaction Began state
-    TransactionBegan io next airship ->
-      case message of
-        BeginTransactionCompleted _ -> 
-          (model, Cmd.none)
+    BeginTransactionCompleted (Ok transaction) ->
+      case transaction of
+        Transaction.Existing _ _ _ ->
+          fail AlreadyExist
 
-        CommitTransactionCompleted (Err error) ->
-           case error of
-            CommitTransaction.VersionConflict _ -> 
-              fail next VersionConflict
-            
-            other -> 
-              fail next (InternalError (CommitTransaction.errorToString other))
-        
-        CommitTransactionCompleted (Ok _) ->
-          let 
-            event = Event.buildAirshipAddedToFleetV1 <| 
-              Event.AirshipAddedToFleetV1
-                (Airship.id airship) 
-                (Airship.name airship)
-                (Airship.model airship)
-                (Airship.numberOfSeats airship)
+        Transaction.Empty _ ->
+          let
+            commit = io.commitTransaction (Transaction.withValue airship transaction) |> Cmd.map CommitTransactionCompleted
           in
-            (TransactionCommitted io next airship, io.publish event |> Cmd.map EventPublishCompleted)
+            transition (CommittingTransaction airship) (commit)
 
-        EventPublishCompleted _ ->
-          (model, Cmd.none) 
+    CommitTransactionCompleted _ ->
+      ignore
 
-    -- Transaction Committed state
-    TransactionCommitted _ next airship ->
-      case message of 
-        BeginTransactionCompleted _ -> 
-          (model, Cmd.none) 
-
-        CommitTransactionCompleted _ ->
-          (model, Cmd.none) 
-          
-        EventPublishCompleted _ -> 
-          (Completed, next (Ok (Airship.id airship)))
-
-    -- Finished states
-    Failed _ ->
-      (model, Cmd.none)
-
-    Completed ->
-      (model, Cmd.none)
+    EventPublishCompleted _ ->
+      ignore
 
 
-fail : Next -> Error -> (Model, Cmd Message)
-fail next problem =
-  (Failed problem, next (Err problem))
+committingTransaction : Airship -> StateHandler
+committingTransaction airship io message =
+  case message of
+    BeginTransactionCompleted _ ->
+      ignore
+
+    CommitTransactionCompleted (Err error) ->
+        case error of
+          CommitTransaction.VersionConflict _ ->
+            fail VersionConflict
+
+          other ->
+            fail (InternalError (CommitTransaction.errorToString other))
+
+    CommitTransactionCompleted (Ok _) ->
+      let
+        event = Event.buildAirshipAddedToFleetV1 <|
+          Event.AirshipAddedToFleetV1
+            (Airship.id airship)
+            (Airship.name airship)
+            (Airship.model airship)
+            (Airship.numberOfSeats airship)
+
+        publish = io.publish event |> Cmd.map EventPublishCompleted
+      in
+        transition (PublishingEvent airship) (publish)
+
+    EventPublishCompleted _ ->
+      ignore
+
+
+publishingEvent : StateHandler
+publishingEvent _ _ =
+  ignore
+
+
+-- helpers
+handle : Message -> Model -> StateHandler -> (Model, Cmd Message)
+handle message model handler =
+  case handler model.io message model.state of
+    -- exits
+    (Err problem, _) -> (model, model.next (Err problem))
+    (Ok (PublishingEvent airship), _) -> (model, model.next (Ok (Airship.id airship)))
+    -- progress
+    (Ok newState, newCmd) -> ({ model | state = newState }, newCmd)
+
+
+fail : Error -> Transition
+fail problem _ =
+  (Err problem, Cmd.none)
+
+
+ignore : Transition
+ignore state =
+  (Ok state, Cmd.none)
+
+
+transition : State -> Cmd Message -> Transition
+transition new cmd _ =
+  (Ok new, cmd)

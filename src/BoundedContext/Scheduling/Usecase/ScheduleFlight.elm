@@ -1,5 +1,5 @@
 module BoundedContext.Scheduling.Usecase.ScheduleFlight exposing
-  ( Model(..)
+  ( Model
   , Error(..)
   , Message(..)
   , IO
@@ -26,24 +26,32 @@ import Time
 import Prelude.Event as Event
 import Prelude.Transaction as Transaction
 import Cloudflare.Worker.Queue as Queue
+import Task
 
 
-type Model 
-  = Initialised IO Next Command
-  | DepartureAirfieldResolved IO Next Command Airfield
-  | ArrivalAirfieldResolved IO Next Command Airfield Airfield
-  | AirshipResolved IO Next Flight
-  | TransactionBegan IO Next Flight
-  | TransactionCommitted IO Next Flight
-  | Failed Error
-  | Completed 
+type alias Model =
+  { io : IO
+  , next : Next
+  , state : State
+  }
 
+
+type State
+  = ResolvingFlight PartialResolvedFlight
+  | BeginningTransaction Flight
+  | CommittingTransaction Flight
+  | PublishingEvent Flight
+
+type alias StateHandler = IO -> Message -> Transition
+
+type alias Transition = State -> (Result Error State, Cmd Message)
 
 type Error
   = AlreadyExist
   | VersionConflict
-  | UnknownAirfield AirfieldId
-  | UnknownAirship AirshipId
+  | UnknownDepartureAirfield
+  | UnknownArrivalAirfield
+  | UnknownAirship
   | SameDepartureAndArrivalLocation
   | DepartureIsLaterThenArrival
   | InternalError String
@@ -53,6 +61,7 @@ type Message
   = ResolveDepartureAirfieldCompleted (Get.Result Airfield)
   | ResolveArrivalAirfieldCompleted (Get.Result Airfield)
   | ResolveAirshipCompleted (Get.Result Airship)
+  | FlightResolved (Result Flight.BuildError Flight)
   | BeginTransactionCompleted (BeginTransaction.Result Flight)
   | CommitTransactionCompleted (CommitTransaction.Result Flight)
   | EventPublishCompleted Queue.Result
@@ -87,111 +96,150 @@ type alias Next = CommandResult -> Cmd Message
 init : IO -> Next -> Command -> (Model, Cmd Message)
 init io next command =
   let
-    model = 
-      Initialised io next command
-    
-    resolveDepartureAirfield = 
-      io.resolveAirfield command.departureLocation |> Cmd.map ResolveDepartureAirfieldCompleted
+    resolvers =
+      [ io.resolveAirfield command.departureLocation |> Cmd.map ResolveDepartureAirfieldCompleted
+      , io.resolveAirfield command.arrivalLocation |> Cmd.map ResolveArrivalAirfieldCompleted
+      , io.resolveAirship command.airship |> Cmd.map ResolveAirshipCompleted
+      ]
+
+    state =
+      ResolvingFlight (flightFromCommand command)
   in
-    (model, resolveDepartureAirfield)
+    (Model io next state, Cmd.batch resolvers)
 
 
 update : Message -> Model -> (Model, Cmd Message)
 update message model = 
-  case (model, message) of
-    -- initialised
-    (Initialised _ next _, ResolveDepartureAirfieldCompleted (Err error)) ->
-      fail next (InternalError (Get.errorToString error))
+  handle message model <|
+    case model.state of
+      ResolvingFlight flight ->
+        resolvingFlight flight
 
-    (Initialised _ next command, ResolveDepartureAirfieldCompleted (Ok Nothing)) ->
-      fail next (UnknownAirfield command.departureLocation)
+      BeginningTransaction flight ->
+        beginningTransaction flight
 
-    (Initialised io next command, ResolveDepartureAirfieldCompleted (Ok (Just departureAirfield))) ->
-      let 
-        model_ = 
-          DepartureAirfieldResolved io next command departureAirfield
+      CommittingTransaction flight ->
+        committingTransaction flight
 
-        resolveArrivalAirfield = 
-          io.resolveAirfield command.arrivalLocation |> Cmd.map ResolveArrivalAirfieldCompleted
-      in
-        (model_, resolveArrivalAirfield)
+      PublishingEvent flight ->
+        publishingEvent flight
 
-    -- departure resolved
-    (DepartureAirfieldResolved _ next command _, ResolveArrivalAirfieldCompleted (Ok Nothing)) ->
-      fail next (UnknownAirfield command.arrivalLocation)
 
-    (DepartureAirfieldResolved _ next _ _, ResolveArrivalAirfieldCompleted (Err error)) ->
-      fail next (InternalError (Get.errorToString error))
+resolvingFlight : PartialResolvedFlight -> StateHandler
+resolvingFlight flight io message =
+  let
+    resolve set nothingError result =
+      case result of
+        Ok (Just value) ->
+          transition (ResolvingFlight (set value flight)) (tryResolveFlight (set value flight))
 
-    (DepartureAirfieldResolved io next command departureAirfield, ResolveArrivalAirfieldCompleted (Ok (Just arrivalAirfield))) ->
-      let 
-        model_ = 
-          ArrivalAirfieldResolved io next command departureAirfield arrivalAirfield
+        Ok Nothing ->
+          fail nothingError
 
-        resolveAirship = 
-          io.resolveAirship command.airship |> Cmd.map ResolveAirshipCompleted
-      in
-        (model_, resolveAirship)
+        Err error ->
+          fail (InternalError (Get.errorToString error))
+  in
+    case message of
+      ResolveDepartureAirfieldCompleted result ->
+        resolve resolveDepartureAirfield UnknownDepartureAirfield result
 
-    -- arrival resolved
-    (ArrivalAirfieldResolved _ next _ _ _, ResolveAirshipCompleted (Err error)) ->
-      fail next (InternalError (Get.errorToString error))
+      ResolveArrivalAirfieldCompleted result ->
+        resolve resolveArrivalAirfield UnknownArrivalAirfield result
 
-    (ArrivalAirfieldResolved _ next command _ _, ResolveAirshipCompleted (Ok Nothing)) ->
-      fail next (UnknownAirship command.airship)
-  
-    (ArrivalAirfieldResolved io next command departureAirfield arrivalAirfield, ResolveAirshipCompleted (Ok (Just airship))) ->
-      let
-        buildResult = Flight.build 
-          command.id 
-          command.departureTime 
-          departureAirfield 
-          command.arrivalTime 
-          arrivalAirfield 
-          airship
+      ResolveAirshipCompleted result ->
+        resolve resolveAirship UnknownAirship result
 
-        beginTransaction = 
-          io.beginTransaction command.id |> Cmd.map BeginTransactionCompleted
-      in
-        case buildResult of
+      FlightResolved result ->
+        case result of
           Err Flight.SameDepartureAndArrivalLocation ->
-            fail next SameDepartureAndArrivalLocation
+            fail SameDepartureAndArrivalLocation
 
           Err Flight.DepartureIsLaterThenArrival ->
-            fail next DepartureIsLaterThenArrival
+            fail DepartureIsLaterThenArrival
 
-          Ok flight -> 
-            (AirshipResolved io next flight, beginTransaction)
+          Ok value ->
+            let
+              beginTransaction =
+                io.beginTransaction (Flight.id value) |> Cmd.map BeginTransactionCompleted
+            in
+              transition (BeginningTransaction value) beginTransaction
 
-    -- airship resolved
-    (AirshipResolved _ next _, BeginTransactionCompleted (Err error)) ->
-      fail next (InternalError (BeginTransaction.errorToString error))
+      BeginTransactionCompleted _ ->
+        ignore
 
-    (AirshipResolved io next flight, BeginTransactionCompleted (Ok transaction)) ->
+      CommitTransactionCompleted _ ->
+        ignore
+
+      EventPublishCompleted _ ->
+        ignore
+
+
+beginningTransaction : Flight -> StateHandler
+beginningTransaction flight io message =
+  case message of
+    ResolveDepartureAirfieldCompleted _ ->
+      ignore
+
+    ResolveArrivalAirfieldCompleted _ ->
+      ignore
+
+    ResolveAirshipCompleted _ ->
+      ignore
+
+    FlightResolved _ ->
+      ignore
+
+    BeginTransactionCompleted (Err error) ->
+      fail (InternalError (BeginTransaction.errorToString error))
+
+    BeginTransactionCompleted (Ok transaction) ->
       case transaction of
-        Transaction.Existing _ _ _ -> 
-          fail next AlreadyExist
+        Transaction.Existing _ _ _ ->
+          fail AlreadyExist
 
         Transaction.Empty _ ->
           let
             transaction_ = Transaction.withValue flight transaction
-
             commitTransaction = io.commitTransaction transaction_ |> Cmd.map CommitTransactionCompleted
           in
-            (TransactionBegan io next flight, commitTransaction)
-    
-    -- transaction began
-    (TransactionBegan _ next _, CommitTransactionCompleted (Err error)) ->
+            transition (CommittingTransaction flight) (commitTransaction)
+
+    CommitTransactionCompleted _ ->
+      ignore
+
+    EventPublishCompleted _ ->
+      ignore
+
+
+committingTransaction : Flight -> StateHandler
+committingTransaction flight io message =
+  case message of
+    ResolveAirshipCompleted _ ->
+      ignore
+
+    ResolveDepartureAirfieldCompleted _ ->
+      ignore
+
+    ResolveArrivalAirfieldCompleted _ ->
+      ignore
+
+    FlightResolved _ ->
+      ignore
+
+    BeginTransactionCompleted _ ->
+      ignore
+
+    CommitTransactionCompleted (Err error) ->
       case error of
-        CommitTransaction.VersionConflict _ -> 
-          fail next VersionConflict
-        
-        other -> 
-          fail next (InternalError (CommitTransaction.errorToString other))
-    
-    (TransactionBegan io next flight, CommitTransactionCompleted (Ok _)) ->
+        CommitTransaction.VersionConflict _ ->
+          fail VersionConflict
+
+        other ->
+          fail (InternalError (CommitTransaction.errorToString other))
+
+    CommitTransactionCompleted (Ok _) ->
       let
-        event = Event.buildFlightScheduledV1 <| 
+        event = Event.buildFlightScheduledV1 <|
           Event.FlightScheduledV1
             (Flight.id flight)
             (Flight.departure flight)
@@ -200,17 +248,87 @@ update message model =
 
         publishEvent = io.publish event |> Cmd.map EventPublishCompleted
       in
-        (TransactionCommitted io next flight, publishEvent)
+        transition (PublishingEvent flight) (publishEvent)
 
-    -- transaction commited
-    (TransactionCommitted _ next flight, EventPublishCompleted _ ) ->
-      (Completed, next (Ok (Flight.id flight)))
+    EventPublishCompleted _ ->
+      ignore
 
-    -- otherwise
+
+publishingEvent : Flight -> StateHandler
+publishingEvent _ _ _ =
+  ignore
+
+
+-- helpers
+type alias PartialResolvedFlight =
+  { departureAirfield: Maybe Airfield
+  , arrivalAirfield: Maybe Airfield
+  , airship: Maybe Airship
+  , resolve: Airfield -> Airfield -> Airship -> Result Flight.BuildError Flight
+  }
+
+
+flightFromCommand : Command -> PartialResolvedFlight
+flightFromCommand command =
+  { resolve = \departureAirfield arrivalAirfield airship ->
+      Flight.build
+        command.id
+        command.departureTime
+        departureAirfield
+        command.arrivalTime
+        arrivalAirfield
+        airship
+  , departureAirfield = Nothing
+  , arrivalAirfield = Nothing
+  , airship = Nothing
+  }
+
+
+resolveDepartureAirfield : Airfield -> PartialResolvedFlight -> PartialResolvedFlight
+resolveDepartureAirfield airfield flight =
+  { flight | departureAirfield = Just airfield }
+
+
+resolveArrivalAirfield : Airfield -> PartialResolvedFlight -> PartialResolvedFlight
+resolveArrivalAirfield airfield flight =
+  { flight | arrivalAirfield = Just airfield }
+
+
+resolveAirship : Airship -> PartialResolvedFlight -> PartialResolvedFlight
+resolveAirship airship flight =
+  { flight | airship = Just airship }
+
+
+tryResolveFlight : PartialResolvedFlight -> Cmd Message
+tryResolveFlight flight =
+  case (flight.departureAirfield, flight.arrivalAirfield, flight.airship) of
+    (Just departureAirfield, Just arrivalAirfield, Just airship) ->
+      Task.perform FlightResolved <| Task.succeed (flight.resolve departureAirfield arrivalAirfield airship)
+
     _ ->
-      (Failed (InternalError "invalid state"), Cmd.none)
+      Cmd.none
 
 
-fail : Next -> Error -> (Model, Cmd Message)
-fail next problem =
-  (Failed problem, next (Err problem))
+handle : Message -> Model -> StateHandler -> (Model, Cmd Message)
+handle message model handler =
+  case handler model.io message model.state of
+    -- exits
+    (Err problem, _) -> (model, model.next (Err problem))
+    (Ok (PublishingEvent flight), _) -> (model, model.next (Ok (Flight.id flight)))
+    -- progress
+    (Ok newState, newCmd) -> ({ model | state = newState }, newCmd)
+
+
+fail : Error -> Transition
+fail problem _ =
+  (Err problem, Cmd.none)
+
+
+ignore : Transition
+ignore state =
+  (Ok state, Cmd.none)
+
+
+transition : State -> Cmd Message -> Transition
+transition new cmd _ =
+  (Ok new, cmd)

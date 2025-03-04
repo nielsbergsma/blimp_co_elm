@@ -214,25 +214,28 @@ formatAddAirshipToFleetResponse result =
 formatScheduleFlightResponse : ScheduleFlightUseCase.CommandResult -> Cmd msg 
 formatScheduleFlightResponse result = 
   case result of
-    Err ScheduleFlightUseCase.AlreadyExist -> 
+    Err ScheduleFlightUseCase.AlreadyExist ->
       Fetch.respond (Fetch.conflict "already exist")
 
-    Err ScheduleFlightUseCase.VersionConflict -> 
+    Err ScheduleFlightUseCase.VersionConflict ->
       Fetch.respond (Fetch.conflict "version conflict")
 
-    Err (ScheduleFlightUseCase.UnknownAirfield airfield) -> 
-      Fetch.respond (Fetch.badRequest ("unknown airfield " ++ AirfieldId.toString airfield))
+    Err ScheduleFlightUseCase.UnknownDepartureAirfield ->
+      Fetch.respond (Fetch.badRequest "unknown departure airfield")
 
-    Err (ScheduleFlightUseCase.UnknownAirship airship) -> 
-      Fetch.respond (Fetch.badRequest ("unknown airship " ++ AirshipId.toString airship))
+    Err ScheduleFlightUseCase.UnknownArrivalAirfield ->
+      Fetch.respond (Fetch.badRequest "unknown arrival airfield")
 
-    Err ScheduleFlightUseCase.SameDepartureAndArrivalLocation -> 
+    Err ScheduleFlightUseCase.UnknownAirship ->
+      Fetch.respond (Fetch.badRequest "unknown airship")
+
+    Err ScheduleFlightUseCase.SameDepartureAndArrivalLocation ->
       Fetch.respond (Fetch.badRequest "same departure and arrival location")
 
-    Err ScheduleFlightUseCase.DepartureIsLaterThenArrival -> 
+    Err ScheduleFlightUseCase.DepartureIsLaterThenArrival ->
       Fetch.respond (Fetch.badRequest "departure is later then arrival")
 
-    Err (ScheduleFlightUseCase.InternalError reason) -> 
+    Err (ScheduleFlightUseCase.InternalError reason) ->
       Fetch.respond (Fetch.internalError reason)
 
     Ok value ->

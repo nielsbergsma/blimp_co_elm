@@ -1,5 +1,5 @@
 module BoundedContext.Scheduling.Usecase.RegisterAirfield exposing 
-  ( Model(..)
+  ( Model
   , Error(..)
   , Message(..)
   , IO
@@ -25,12 +25,21 @@ import Cloudflare.Worker.Queue as Queue
 import Prelude.Transaction as Transaction
 
 
-type Model 
-  = Initialised IO Next Airfield
-  | TransactionBegan IO Next Airfield
-  | TransactionCommitted IO Next Airfield
-  | Failed Error
-  | Completed 
+type alias Model =
+  { io : IO
+  , next : Next
+  , state : State
+  }
+
+
+type State
+  = BeginningTransaction Airfield
+  | CommittingTransaction Airfield
+  | PublishingEvent Airfield
+
+type alias StateHandler = IO -> Message -> Transition
+
+type alias Transition = State -> (Result Error State, Cmd Message)
 
 
 type Error
@@ -70,85 +79,113 @@ type alias Next = CommandResult -> Cmd Message
 init : IO -> Next -> Command -> (Model, Cmd Message)
 init io next command =
   let 
-    airfield = Airfield.build command.id command.name command.location command.timeZone
+    airfield =
+      Airfield.build command.id command.name command.location command.timeZone
+
+    state =
+      BeginningTransaction airfield
+
+    beginTransaction =
+      io.beginTransaction command.id |> Cmd.map BeginTransactionCompleted
   in
-    (Initialised io next airfield, io.beginTransaction command.id |> Cmd.map BeginTransactionCompleted)
+    (Model io next state, beginTransaction)
 
 
 update : Message -> Model -> (Model, Cmd Message)
-update message model = 
-  case model of 
-    -- Initialized state
-    Initialised io next airfield ->
-      case message of
-        BeginTransactionCompleted (Err error) ->
-          fail next (InternalError (BeginTransaction.errorToString error))
+update message model =
+  handle message model <|
+    case model.state of
+      BeginningTransaction airfield ->
+        beginningTransaction airfield
 
-        BeginTransactionCompleted (Ok transaction) ->
-          case transaction of
-            Transaction.Existing _ _ _ -> 
-              fail next AlreadyExist
+      CommittingTransaction airfield ->
+        committingTransaction airfield
 
-            Transaction.Empty _ ->
-              let
-                transaction_ = Transaction.withValue airfield transaction
-              in
-                (TransactionBegan io next airfield, io.commitTransaction transaction_ |> Cmd.map CommitTransactionCompleted)
+      PublishingEvent _ ->
+        publishingEvent
 
-        CommitTransactionCompleted _ -> 
-          (model, Cmd.none)
 
-        EventPublishCompleted _ ->
-          (model, Cmd.none) 
+beginningTransaction : Airfield -> StateHandler
+beginningTransaction airfield io message =
+  case message of
+    BeginTransactionCompleted (Err error) ->
+      fail (InternalError (BeginTransaction.errorToString error))
 
-    -- Transaction Began state
-    TransactionBegan io next airfield ->
-      case message of
-        BeginTransactionCompleted _ -> 
-          (model, Cmd.none)
+    BeginTransactionCompleted (Ok transaction) ->
+      case transaction of
+        Transaction.Existing _ _ _ ->
+          fail AlreadyExist
 
-        CommitTransactionCompleted (Err error) ->
-           case error of
-            CommitTransaction.VersionConflict _ -> 
-              fail next VersionConflict
-            
-            other -> 
-              fail next (InternalError (CommitTransaction.errorToString other))
-        
-        CommitTransactionCompleted (Ok _) ->
-          let 
-            event = Event.buildAirfieldRegisteredV1 <| 
-              Event.AirfieldRegisteredV1
-                (Airfield.id airfield) 
-                (Airfield.name airfield)
-                (Airfield.location airfield)
-                (Airfield.timeZone airfield)
+        Transaction.Empty _ ->
+          let
+            commit = io.commitTransaction (Transaction.withValue airfield transaction) |> Cmd.map CommitTransactionCompleted
           in
-            (TransactionCommitted io next airfield, io.publish event |> Cmd.map EventPublishCompleted)
+            transition (CommittingTransaction airfield) (commit)
 
-        EventPublishCompleted _ ->
-          (model, Cmd.none) 
+    CommitTransactionCompleted _ ->
+      ignore
 
-    -- Transaction Committed state
-    TransactionCommitted _ next airfield ->
-      case message of 
-        BeginTransactionCompleted _ -> 
-          (model, Cmd.none) 
-
-        CommitTransactionCompleted _ ->
-          (model, Cmd.none) 
-          
-        EventPublishCompleted _ -> 
-          (Completed, next (Ok (Airfield.id airfield)))
-
-    -- Finished states
-    Failed _ ->
-      (model, Cmd.none)
-
-    Completed ->
-      (model, Cmd.none)
+    EventPublishCompleted _ ->
+      ignore
 
 
-fail : Next -> Error -> (Model, Cmd Message)
-fail next problem =
-  (Failed problem, next (Err problem))
+committingTransaction : Airfield -> StateHandler
+committingTransaction airfield io message =
+  case message of
+    BeginTransactionCompleted _ ->
+      ignore
+
+    CommitTransactionCompleted (Err error) ->
+      case error of
+        CommitTransaction.VersionConflict _ ->
+          fail VersionConflict
+
+        other ->
+          fail (InternalError (CommitTransaction.errorToString other))
+
+    CommitTransactionCompleted (Ok _) ->
+      let
+        event = Event.buildAirfieldRegisteredV1 <|
+          Event.AirfieldRegisteredV1
+            (Airfield.id airfield)
+            (Airfield.name airfield)
+            (Airfield.location airfield)
+            (Airfield.timeZone airfield)
+
+        publish = io.publish event |> Cmd.map EventPublishCompleted
+      in
+        transition (PublishingEvent airfield) (publish)
+
+    EventPublishCompleted _ ->
+      ignore
+
+
+publishingEvent : StateHandler
+publishingEvent _ _ =
+  ignore
+
+
+-- helpers
+handle : Message -> Model -> StateHandler -> (Model, Cmd Message)
+handle message model handler =
+  case handler model.io message model.state of
+    -- exits
+    (Err problem, _) -> (model, model.next (Err problem))
+    (Ok (PublishingEvent airfield), _) -> (model, model.next (Ok (Airfield.id airfield)))
+    -- progress
+    (Ok newState, newCmd) -> ({ model | state = newState }, newCmd)
+
+
+fail : Error -> Transition
+fail problem _ =
+  (Err problem, Cmd.none)
+
+
+ignore : Transition
+ignore state =
+  (Ok state, Cmd.none)
+
+
+transition : State -> Cmd Message -> Transition
+transition new cmd _ =
+  (Ok new, cmd)

@@ -9,7 +9,7 @@ build@scheduling-api:
 	cp js/*.js dist/scheduling-api
 	
 	sed -i -e 's/MAIN/Elm.Service.SchedulingApi.Main/g' dist/scheduling-api/worker.js
-	rm dist/scheduling-api/*.js-e
+	rm -f dist/scheduling-api/*.js-e
 
 build@scheduling-dashboard-projection:
 	mkdir -p dist/scheduling-dashboard-projection
@@ -20,7 +20,7 @@ build@scheduling-dashboard-projection:
 	cp js/*.js dist/scheduling-dashboard-projection
 
 	sed -i -e 's/MAIN/Elm.Service.SchedulingDashboardProjection.Main/g' dist/scheduling-dashboard-projection/worker.js
-	rm dist/scheduling-dashboard-projection/*.js-e
+	rm -f dist/scheduling-dashboard-projection/*.js-e
 
 build@backoffice:
 	rm -rf dist/backoffice
