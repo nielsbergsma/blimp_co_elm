@@ -128,26 +128,26 @@ update message model =
 resolvingFlight : PartialResolvedFlight -> StateHandler
 resolvingFlight flight io message =
   let
-    resolve set nothingError result =
+    resolvePart set error result =
       case result of
         Ok (Just value) ->
           transition (ResolvingFlight (set value flight)) (tryResolveFlight (set value flight))
 
         Ok Nothing ->
-          fail nothingError
+          fail error
 
-        Err error ->
-          fail (InternalError (Get.errorToString error))
+        Err reason ->
+          fail (InternalError (Get.errorToString reason))
   in
     case message of
       ResolveDepartureAirfieldCompleted result ->
-        resolve resolveDepartureAirfield UnknownDepartureAirfield result
+        resolvePart resolveDepartureAirfield UnknownDepartureAirfield result
 
       ResolveArrivalAirfieldCompleted result ->
-        resolve resolveArrivalAirfield UnknownArrivalAirfield result
+        resolvePart resolveArrivalAirfield UnknownArrivalAirfield result
 
       ResolveAirshipCompleted result ->
-        resolve resolveAirship UnknownAirship result
+        resolvePart resolveAirship UnknownAirship result
 
       FlightResolved result ->
         case result of
