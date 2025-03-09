@@ -18,7 +18,7 @@ import BoundedContext.Scheduling.Usecase.ScheduleFlight as ScheduleFlightUseCase
 
 type Message
   = Failure String
-  | FetchRequest Request
+  | HandleRequest Request
   | RegisterAirfieldMessage RegisterAirfieldUseCase.Message
   | AddAirshipToFleetMessage AddAirshipToFleetUseCase.Message
   | ScheduleFlightMessage ScheduleFlightUseCase.Message
@@ -28,14 +28,14 @@ type Model
   = Initialising
   | RegisteringAirfield RegisterAirfieldUseCase.Model
   | AddingAirshipToFleet AddAirshipToFleetUseCase.Model
-  | ScheduleFlight ScheduleFlightUseCase.Model
+  | SchedulingFlight ScheduleFlightUseCase.Model
 
 
 main : Program () Model Message
 main =
   Platform.worker
   { init = init
-  , subscriptions = always (Fetch.subscribeFetch FetchRequest Failure)
+  , subscriptions = always (Fetch.subscribeFetch HandleRequest Failure)
   , update = update
   }
 
@@ -48,7 +48,7 @@ init _ =
 update : Message -> Model -> (Model, Cmd Message)
 update message model =
   case message of
-    FetchRequest request ->
+    HandleRequest request ->
       route model request
 
     RegisterAirfieldMessage usecaseMessage ->
@@ -71,9 +71,9 @@ update message model =
 
     ScheduleFlightMessage usecaseMessage ->
       case model of 
-        ScheduleFlight usecaseModel ->
+        SchedulingFlight usecaseModel ->
           ScheduleFlightUseCase.update usecaseMessage usecaseModel 
-          |> mapMM ScheduleFlight ScheduleFlightMessage
+          |> mapMM SchedulingFlight ScheduleFlightMessage
 
         _ -> 
           (model, respond (internalError "malformed state"))
@@ -103,7 +103,7 @@ route model request =
       authorize Fetch.Agent request
       |> Result.andThen (TransferObject.parseScheduleFlightRequest)
       |> Result.map (ScheduleFlightUseCase.init scheduleFlightUseCaseIO TransferObject.formatScheduleFlightResponse)            
-      |> Result.map (mapMM ScheduleFlight ScheduleFlightMessage)
+      |> Result.map (mapMM SchedulingFlight ScheduleFlightMessage)
       |> okOrElse (\error -> (model, respond error))
         
     _ -> 
@@ -143,7 +143,7 @@ scheduleFlightUseCaseIO  =
 
 
 -- helpers
-mapMM : (a -> b) -> (c -> msg) -> (a, Cmd c) -> (b, Cmd msg)
+mapMM : (a -> b) -> (c -> d) -> (a, Cmd c) -> (b, Cmd d)
 mapMM toModel toCmd (model, cmd) = 
   (toModel model, Cmd.map toCmd cmd)
 
