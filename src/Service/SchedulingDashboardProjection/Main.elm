@@ -18,8 +18,8 @@ type Message
 
 
 type Model
-  = Initialised
-  | ProjectDashboard Dashboard.Model
+  = Initialising
+  | ProjectingDashboard Dashboard.Model
 
 
 main : Program () Model Message
@@ -32,7 +32,7 @@ main =
 
 
 init : () -> (Model, Cmd Message)
-init _ = (Initialised, Cmd.none)
+init _ = (Initialising, Cmd.none)
 
 
 update : Message -> Model -> (Model, Cmd Message)
@@ -43,9 +43,9 @@ update message model =
 
     DashboardProjectionMessage projectionMessage ->
       case model of
-        ProjectDashboard projectionModel ->
+        ProjectingDashboard projectionModel ->
           Dashboard.update projectionMessage projectionModel 
-          |> mapMM ProjectDashboard DashboardProjectionMessage
+          |> mapMM ProjectingDashboard DashboardProjectionMessage
 
         _ ->
           (model, Cmd.none)
@@ -67,7 +67,7 @@ dispatch _ event =
         Err error -> Queue.nack (Dashboard.errorToString error)
   in
     Dashboard.init io next event
-    |> mapMM ProjectDashboard DashboardProjectionMessage
+    |> mapMM ProjectingDashboard DashboardProjectionMessage
 
 
 decodeEvent : JsonDecode.Decoder Dashboard.Event
@@ -80,6 +80,6 @@ decodeEvent =
 
 
 -- helpers
-mapMM : (a -> b) -> (c -> msg) -> ( a, Cmd c ) -> ( b, Cmd msg )
+mapMM : (a -> b) -> (c -> d) -> (a, Cmd c) -> (b, Cmd d)
 mapMM toModel toCmd (model, cmd) = 
   (toModel model, Cmd.map toCmd cmd)

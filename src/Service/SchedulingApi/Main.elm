@@ -25,9 +25,9 @@ type Message
 
 
 type Model
-  = Initialised
-  | RegisterAirfield RegisterAirfieldUseCase.Model
-  | AddAirshipToFleet AddAirshipToFleetUseCase.Model
+  = Initialising
+  | RegisteringAirfield RegisterAirfieldUseCase.Model
+  | AddingAirshipToFleet AddAirshipToFleetUseCase.Model
   | ScheduleFlight ScheduleFlightUseCase.Model
 
 
@@ -42,7 +42,7 @@ main =
 
 init : () -> (Model, Cmd Message)
 init _ = 
-  (Initialised, Cmd.none)
+  (Initialising, Cmd.none)
 
 
 update : Message -> Model -> (Model, Cmd Message)
@@ -53,18 +53,18 @@ update message model =
 
     RegisterAirfieldMessage usecaseMessage ->
       case model of 
-        RegisterAirfield usecaseModel ->
+        RegisteringAirfield usecaseModel ->
           RegisterAirfieldUseCase.update usecaseMessage usecaseModel 
-          |> mapMM RegisterAirfield RegisterAirfieldMessage
+          |> mapMM RegisteringAirfield RegisterAirfieldMessage
 
         _ -> 
           (model, respond (internalError "malformed state"))
 
     AddAirshipToFleetMessage usecaseMessage ->
       case model of 
-        AddAirshipToFleet usecaseModel ->
+        AddingAirshipToFleet usecaseModel ->
           AddAirshipToFleetUseCase.update usecaseMessage usecaseModel 
-          |> mapMM AddAirshipToFleet AddAirshipToFleetMessage
+          |> mapMM AddingAirshipToFleet AddAirshipToFleetMessage
 
         _ -> 
           (model, respond (internalError "malformed state"))
@@ -89,14 +89,14 @@ route model request =
       authorize Fetch.Agent request
       |> Result.andThen (TransferObject.parseRegisterAirfieldRequest)
       |> Result.map (RegisterAirfieldUseCase.init registerAirfieldUseCaseIO TransferObject.formatRegisterAirfieldResponse)            
-      |> Result.map (mapMM RegisterAirfield RegisterAirfieldMessage)
+      |> Result.map (mapMM RegisteringAirfield RegisterAirfieldMessage)
       |> okOrElse (\error -> (model, respond error))
 
     (Post, [ "airships" ]) ->
       authorize Fetch.Agent request
       |> Result.andThen (TransferObject.parseAddAirshipToFleetRequest)
       |> Result.map (AddAirshipToFleetUseCase.init addAirshipToFleetUseCaseIO TransferObject.formatAddAirshipToFleetResponse)            
-      |> Result.map (mapMM AddAirshipToFleet AddAirshipToFleetMessage)
+      |> Result.map (mapMM AddingAirshipToFleet AddAirshipToFleetMessage)
       |> okOrElse (\error -> (model, respond error))
 
     (Post, [ "flights" ]) ->
